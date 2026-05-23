@@ -680,4 +680,162 @@ static esp_err_t index_handler(httpd_req_t *req) {
 // =====================================
 // ROBOT COMMAND HANDLERS
 // =====================================
-+
+extern void performKick();
+
+
+struct MoveParams {
+    float x;
+    float y;
+};
+
+
+static esp_err_t move_handler(httpd_req_t *req)
+{
+    char query[64];
+    float x = 15, y = -10;
+
+
+    if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK)
+    {
+        char xBuf[16];
+        char yBuf[16];
+
+
+        if (httpd_query_key_value(query, "x", xBuf, sizeof(xBuf)) == ESP_OK &&
+            httpd_query_key_value(query, "y", yBuf, sizeof(yBuf)) == ESP_OK)
+        {
+            x = atof(xBuf);
+            y = atof(yBuf);
+        }
+    }
+
+
+    httpd_resp_send(req, "OK", HTTPD_RESP_USE_STRLEN);
+
+
+    MoveParams *params = new MoveParams{x, y};
+
+
+    xTaskCreate(
+        [](void *arg){
+            MoveParams *p = (MoveParams *)arg;
+            extern void smoothMoveTo(float, float, int, int);
+            smoothMoveTo(p->x, p->y, 8, 5);
+            Serial.printf("MOVE DONE -> X: %.1f Y: %.1f\n", p->x, p->y);
+            delete p;
+            vTaskDelete(NULL);
+        },
+        "move_task",
+        4096,
+        params,
+        1,
+        NULL
+    );
+
+
+    return ESP_OK;
+}
+
+
+static bool kickInProgress = false;
+
+
+static esp_err_t kick_handler(httpd_req_t *req)
+{
+    httpd_resp_set_type(req, "text/plain");
+
+
+    if (kickInProgress) {
+        httpd_resp_send(req, "BUSY", HTTPD_RESP_USE_STRLEN);
+        return ESP_OK;
+    }
+
+
+    httpd_resp_send(req, "KICKED", HTTPD_RESP_USE_STRLEN);
+
+
+    xTaskCreate(
+        [](void*){
+            kickInProgress = true;
+            performKick();
+            kickInProgress = false;
+            vTaskDelete(NULL);
+        },
+        "kick_task",
+        4096,
+        NULL,
+        1,
+        NULL
+    );
+
+
+    return ESP_OK;
+}
+
+
+// =====================================
+// MAIN SERVER START FUNCTION
+// =====================================
+
+
+void startCameraServer() {
+  httpd_config_t config = HTTPD_DEFAULT_CONFIG();
+  config.max_uri_handlers = 16;
+
+
+  httpd_uri_t index_uri   = { .uri = "/",           .method = HTTP_GET, .handler = index_handler,   .user_ctx = NULL };
+  httpd_uri_t status_uri  = { .uri = "/status",     .method = HTTP_GET, .handler = status_handler,  .user_ctx = NULL };
+  httpd_uri_t cmd_uri     = { .uri = "/control",    .method = HTTP_GET, .handler = cmd_handler,     .user_ctx = NULL };
+  httpd_uri_t capture_uri = { .uri = "/capture",    .method = HTTP_GET, .handler = capture_handler, .user_ctx = NULL };
+  httpd_uri_t stream_uri  = { .uri = "/stream",     .method = HTTP_GET, .handler = stream_handler,  .user_ctx = NULL };
+  httpd_uri_t bmp_uri     = { .uri = "/bmp",        .method = HTTP_GET, .handler = bmp_handler,     .user_ctx = NULL };
+  httpd_uri_t xclk_uri    = { .uri = "/xclk",       .method = HTTP_GET, .handler = xclk_handler,    .user_ctx = NULL };
+  httpd_uri_t reg_uri     = { .uri = "/reg",        .method = HTTP_GET, .handler = reg_handler,     .user_ctx = NULL };
+  httpd_uri_t greg_uri    = { .uri = "/greg",       .method = HTTP_GET, .handler = greg_handler,    .user_ctx = NULL };
+  httpd_uri_t pll_uri     = { .uri = "/pll",        .method = HTTP_GET, .handler = pll_handler,     .user_ctx = NULL };
+  httpd_uri_t win_uri     = { .uri = "/resolution", .method = HTTP_GET, .handler = win_handler,     .user_ctx = NULL };
+
+
+  httpd_uri_t move_uri = {
+    .uri     = "/move",
+    .method  = HTTP_GET,
+    .handler = move_handler,
+    .user_ctx = NULL
+  };
+
+
+  httpd_uri_t kick_uri = {
+    .uri     = "/kick",
+    .method  = HTTP_GET,
+    .handler = kick_handler,
+    .user_ctx = NULL
+  };
+
+
+  ra_filter_init(&ra_filter, 20);
+
+
+  log_i("Starting web server on port: '%d'", config.server_port);
+  if (httpd_start(&camera_httpd, &config) == ESP_OK) {
+    httpd_register_uri_handler(camera_httpd, &index_uri);
+    httpd_register_uri_handler(camera_httpd, &cmd_uri);
+    httpd_register_uri_handler(camera_httpd, &status_uri);
+    httpd_register_uri_handler(camera_httpd, &capture_uri);
+    httpd_register_uri_handler(camera_httpd, &bmp_uri);
+    httpd_register_uri_handler(camera_httpd, &xclk_uri);
+    httpd_register_uri_handler(camera_httpd, &reg_uri);
+    httpd_register_uri_handler(camera_httpd, &greg_uri);
+    httpd_register_uri_handler(camera_httpd, &pll_uri);
+    httpd_register_uri_handler(camera_httpd, &win_uri);
+    httpd_register_uri_handler(camera_httpd, &move_uri);
+    httpd_register_uri_handler(camera_httpd, &kick_uri);
+  }
+
+
+  config.server_port += 1;
+  config.ctrl_port   += 1;
+  log_i("Starting stream server on port: '%d'", config.server_port);
+  if (httpd_start(&stream_httpd, &config) == ESP_OK) {
+    httpd_register_uri_handler(stream_httpd, &stream_uri);
+  }
+}
